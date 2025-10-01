@@ -22,17 +22,28 @@ export const AuthProvider = ({ children }) => {
 
   const fetchProfile = useCallback(async (userId) => {
     if (!userId) return null;
+
     try {
       const { data, error } = await supabase
         .from("profiles")
         .select("*")
         .eq("id", userId)
         .single();
-      if (error) throw error;
+
+      if (error) {
+        // ✅ Ne pas bloquer si la table profiles n'existe pas
+        console.warn(
+          "Profile fetch failed (normal si pas de table profiles):",
+          error.message
+        );
+        setProfile(null);
+        return null;
+      }
+
       setProfile(data);
       return data;
     } catch (error) {
-      console.error("Error fetching profile:", error.message);
+      console.warn("Profile fetch error:", error.message);
       setProfile(null);
       return null;
     }
@@ -40,26 +51,56 @@ export const AuthProvider = ({ children }) => {
 
   const handleAuthChange = useCallback(
     async (session) => {
+      console.log("🔄 Auth change:", session?.user?.email || "No user");
+
       const currentUser = session?.user ?? null;
       setUser(currentUser);
       setSession(session);
 
       if (currentUser) {
-        await fetchProfile(currentUser.id);
+        // ✅ Ne pas attendre fetchProfile - ça peut échouer
+        fetchProfile(currentUser.id).catch(() => {
+          // Ignore les erreurs de profil
+          setProfile(null);
+        });
       } else {
         setProfile(null);
       }
+
+      // ✅ TOUJOURS mettre loading à false
+      console.log("✅ Setting loadingInitial to false");
       setLoadingInitial(false);
     },
     [fetchProfile]
   );
 
   useEffect(() => {
+    let mounted = true;
+
     const getInitialSession = async () => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      await handleAuthChange(session);
+      try {
+        const {
+          data: { session },
+          error,
+        } = await supabase.auth.getSession();
+
+        if (error) {
+          console.error("Error getting session:", error);
+          if (mounted) {
+            setLoadingInitial(false);
+          }
+          return;
+        }
+
+        if (mounted) {
+          await handleAuthChange(session);
+        }
+      } catch (error) {
+        console.error("Error in getInitialSession:", error);
+        if (mounted) {
+          setLoadingInitial(false);
+        }
+      }
     };
 
     getInitialSession();
@@ -67,32 +108,49 @@ export const AuthProvider = ({ children }) => {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (event, session) => {
-      await handleAuthChange(session);
+      console.log("🔄 Auth state change event:", event);
+      if (mounted) {
+        await handleAuthChange(session);
+      }
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
   }, [handleAuthChange]);
 
   const signUp = useCallback(
     async (email, password, options) => {
       setLoadingAuth(true);
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: options.data,
-        },
-      });
+      try {
+        const { data, error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: options?.data || {},
+          },
+        });
 
-      if (error) {
+        if (error) {
+          toast({
+            variant: "destructive",
+            title: "Inscription échouée",
+            description: error.message || "Une erreur est survenue",
+          });
+        }
+
+        setLoadingAuth(false);
+        return { user: data.user, error };
+      } catch (error) {
+        setLoadingAuth(false);
         toast({
           variant: "destructive",
-          title: "Sign up Failed",
-          description: error.message || "Something went wrong",
+          title: "Inscription échouée",
+          description: "Une erreur inattendue est survenue",
         });
+        return { user: null, error };
       }
-      setLoadingAuth(false);
-      return { user: data.user, error };
     },
     [toast]
   );
@@ -100,37 +158,64 @@ export const AuthProvider = ({ children }) => {
   const signIn = useCallback(
     async (email, password) => {
       setLoadingAuth(true);
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
+      try {
+        const { error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
 
-      if (error) {
+        if (error) {
+          toast({
+            variant: "destructive",
+            title: "Connexion échouée",
+            description: error.message || "Identifiants incorrects",
+          });
+        }
+
+        setLoadingAuth(false);
+        return { error };
+      } catch (error) {
+        setLoadingAuth(false);
         toast({
           variant: "destructive",
-          title: "Sign in Failed",
-          description: error.message || "Something went wrong",
+          title: "Connexion échouée",
+          description: "Une erreur inattendue est survenue",
         });
+        return { error };
       }
-      setLoadingAuth(false);
-      return { error };
     },
     [toast]
   );
 
   const signOut = useCallback(async () => {
     setLoadingAuth(true);
-    const { error } = await supabase.auth.signOut();
+    try {
+      const { error } = await supabase.auth.signOut();
 
-    if (error) {
+      if (error) {
+        toast({
+          variant: "destructive",
+          title: "Déconnexion échouée",
+          description: error.message || "Une erreur est survenue",
+        });
+      } else {
+        toast({
+          title: "Déconnexion réussie",
+          description: "Vous avez été déconnecté avec succès",
+        });
+      }
+
+      setLoadingAuth(false);
+      return { error };
+    } catch (error) {
+      setLoadingAuth(false);
       toast({
         variant: "destructive",
-        title: "Sign out Failed",
-        description: error.message || "Something went wrong",
+        title: "Déconnexion échouée",
+        description: "Une erreur inattendue est survenue",
       });
+      return { error };
     }
-    setLoadingAuth(false);
-    return { error };
   }, [toast]);
 
   const value = useMemo(
